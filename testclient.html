@@ -1,7 +1,11 @@
 <!DOCTYPE html>
 <html>
   <head>
-        <script>AUTOBAHN_DEBUG = true;</script>
+      <script>
+      AUTOBAHN_DEBUG = true;
+      HEARTBEAT_INTERVAL = 1500;
+      WS_URL = "ws://127.0.0.1:8080/ws";
+      </script>
       <script src="jquery-3.2.1.min.js"></script>
       <script src="autobahn.min.js"></script>
       <script>
@@ -21,15 +25,14 @@
       <div id="peers">
         
       </div>
-      <button>Start Call with peers</button>
-  
+      <button>Start Call with all peers!</button>
+      Your local audio: <audio id="localaudio" autoplay="" controls="" muted=""></audio>   
   
      <script>
         
         /* WAMP url. Currently running locally in docker */
-        var wsuri = "ws://127.0.0.1:8080/ws";
         var connection = new autobahn.Connection({
-           url: wsuri,
+           url: WS_URL,
            realm: "realm1"
         });
 
@@ -56,7 +59,7 @@
             /* remove if over 15 seconds old */
             if ((Date.now() - peer.lastheartbeat) > 15000)
             {
-              removeList[] = peer_key;
+              removeList.push(peer_key);
             }
           });
 
@@ -67,7 +70,18 @@
 
           $("#peers").html(peerList);
 
-        }
+        };
+
+        addPeer = function(sess_id)
+        {
+            peers[sess_id] = {};
+           peer = peers[sess_id];
+           peer.sess_id = sess_id;
+           peer.name = sess_id.substring(0,5);
+
+          return peer;
+
+        };
 
          connection.onopen = function (session, details) {
             console.log("Connected");
@@ -81,11 +95,9 @@
              peer = peers[args[0]];
              
              if(!peer)
-             { // client signon
-              peers[args[0]] = {};
-              peer = peers[args[0]];
-              peer.sess_id = args[0];
-            }             
+             {
+               peer = addPeer(args[0]);
+             }             
                
              peer.lastheartbeat = Date.now()
            }
@@ -99,7 +111,6 @@
 
            /* on_rename callback */
            function on_rename(args) {
-            console.log("on_rename() event received for sess_id "+ args[0] + ", old name=" + names[args[0]] + "new name =" + args[1]);
             peer = peers[args[0]];
              if(!peer)
              {
@@ -107,6 +118,7 @@
                return;
              }
 
+            console.log("on_rename() event received for sess_id "+ args[0] + ", old name=" + peer.name + "new name =" + args[1]);
              peers[args[0]].name = args[1];
            }
 
@@ -119,6 +131,17 @@
                   console.log('failed to subscribe to heartbeat topic', err);
                }
             );
+
+           session.subscribe('com.kraln.webrtc.rename', on_rename).then(
+             
+             function (sub) {
+                  console.log('subscribed to rename topic');
+               },
+               function (err) {
+                  console.log('failed to subscribe to rename topic', err);
+               }
+
+           );
 
             session.subscribe('com.kraln.webrtc.call', on_call).then(
                function (sub) {
@@ -135,7 +158,16 @@
                session.publish('com.kraln.webrtc.heartbeat', [sess_id]); 
                updatePeerList();
               console.log("published heartbeat");
-            }, 500);
+            }, HEARTBEAT_INTERVAL);
+     
+ 
+         $("#btnRename").click(function() {
+          session.publish('com.kraln.webrtc.rename', [sess_id, $("#nickname").val()]);
+          console.log("Sent rename message");
+          });
+
+
+         
          };
          
           // fired when connection was lost (or could not be established)
@@ -149,9 +181,11 @@
          }
          
         $("#nickname").val(sess_id.substring(0,5));
+      
         // connect
         connection.open();
-      </script>
+
+             </script>
 
   
   </body>
