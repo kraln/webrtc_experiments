@@ -1,192 +1,270 @@
 <!DOCTYPE html>
 <html>
   <head>
-      <script>
-      AUTOBAHN_DEBUG = true;
-      HEARTBEAT_INTERVAL = 1500;
-      WS_URL = "ws://127.0.0.1:8080/ws";
-      </script>
-      <script src="jquery-3.2.1.min.js"></script>
-      <script src="autobahn.min.js"></script>
-      <script>
+    <script>
+AUTOBAHN_DEBUG = false;
+HEARTBEAT_INTERVAL = 1500;
+WS_URL = "ws://127.0.0.1:8080/ws";
+ICE_CONFIG = {'iceServers': [{'url': 'stun:stun.services.mozilla.com'}, {'url': 'stun:stun.l.google.com:19302'}]};
 
-        function uuidv4() {
-          return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
-            (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
-          )
-        }
-      </script>
- 
+    </script>
+    <script src="jquery-3.2.1.min.js"></script>
+    <script src="autobahn.min.js"></script>
+    <script src="adapter.js"></script>
+    <script>
+/* misc / utility */
+function uuidv4() {
+  return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+    (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
+  )
+};
+    </script>
+
   </head>
 
   <body>
-      <h1>Kraln WebRTC + WAMP Testing</h1>
-        <input placeholder="Nickname" id="nickname"/><button id="btnRename">Rename</button>
-      <div id="peers">
-        
-      </div>
-      <button>Start Call with all peers!</button>
-      Your local audio: <audio id="localaudio" autoplay="" controls="" muted=""></audio>   
-  
-     <script>
-        
-        /* WAMP url. Currently running locally in docker */
-        var connection = new autobahn.Connection({
-           url: WS_URL,
-           realm: "realm1"
-        });
+    <h1>Kraln WebRTC + WAMP Testing</h1>
+    <input placeholder="Nickname" id="nickname"/><button id="btnRename">Rename</button>
+    <div id="peers">
 
-        var t1; // heartbeat timer
-        var sess_id = uuidv4(); // session id
-        var peers = {};
+    </div>
+    Your local audio: <audio id="localaudio" autoplay="" controls="" muted=""></audio>   
+    <script>
+/* WebRTC stuff */
 
-        /*
+var webrc_localstream;
+var webrtc_peerConnection;
+
+webrtc_getlocalaudio = function() {
+  var constraints = {
+    video: false,
+    audio: true,
+  };
+
+  if(navigator.getUserMedia) {
+    navigator.getUserMedia(constraints, webrtc_getUserMediaSuccess, webrtc_error);
+  } else {
+    console.log("Couldn't get audio stream (unsupported)");
+  }
+};
+webrtc_getUserMediaSuccess = function(stream) {
+webrtc_localstream = stream;
+console.log("Got local audio stream.")
+webrtc_createoffer();
+}; 
+
+webrtc_error = function(error) {
+  console.log("GetUserMediaError: " + error);
+};
+
+webrtc_createoffer = function(shouldoffer)
+{
+    webrtc_peerConnection = new RTCPeerConnection(ICE_CONFIG);
+    webrtc_peerConnection.onicecandidate = webrtc_gotIceCandidate;
+    webrtc_peerConnection.onaddstream = webrtc_gotRemoteStream;
+    webrtc_peerConnection.addStream(webrtc_localstream);
+  if(shouldoffer)
+  {
+    webrtc_peerConnection.createOffer().then(webrtc_createdDescription).catch(webrtc_error);
+  }
+}
+
+webrtc_gotIceCandidate = function(event) {
+
+  if(event.candidate != null) {
+    console.log("Got ice candidate for myself");
+    pub('com.kraln.webrtc.ice', [sess_id, JSON.stringify(event.candidate)]);
+  }
+
+};
+webrtc_gotRemoteStream = function() {};
+webrtc_createdDescription = function(description) {
+    console.log('got description');
+
+    webrtc_peerConnection.setLocalDescription(description).then(
+      function() {
+        pub('com.kraln.webrtc.call', [sess_id,  JSON.stringify({'sdp': webrtc_peerConnection.localDescription})]);
+    }).catch(webrtc_error);
+}
+    </script>
+    <script>
+/* WAMP stuff */  
+/* WAMP url. Currently running locally in docker */
+var connection = new autobahn.Connection({
+  url: WS_URL,
+  realm: "realm1"
+});
+var pub;
+var t1; // heartbeat timer
+var sess_id = uuidv4(); // session id
+var peers = {};
+
+/*
         Peer {
           sess_id = uuid of peer session
           name = name of peer session
           leatheartbeat = last time the heartbeat was seen
         }
 
-        */
-        updatePeerList=function()
-        {
-          var peerList = "Peers: ";
-          var removeList = [];
-          Object.keys(peers).forEach(function(peer_key) {
-            peer = peers[peer_key];
-            peerList = peerList + "<br />"+ peer.name + " [" + peer.sess_id + "] " + (Date.now() - peer.lastheartbeat);
-            
-            /* remove if over 15 seconds old */
-            if ((Date.now() - peer.lastheartbeat) > 15000)
-            {
-              removeList.push(peer_key);
-            }
-          });
+  */
+  updatePeerList=function()
+{
+  var peerList = "Peers: ";
+  var removeList = [];
+  Object.keys(peers).forEach(function(peer_key) {
+    peer = peers[peer_key];
+    peerList = peerList + "<br />"+ peer.name + " [" + peer.sess_id + "] " + (Date.now() - peer.lastheartbeat);
 
-          removeList.forEach(function(peer_key) {
-            console.log("Pruning expired peer " + peer_key);
-            delete peers[peer_key];
-          });
+    /* remove if over 15 seconds old */
+    if ((Date.now() - peer.lastheartbeat) > 15000)
+    {
+      removeList.push(peer_key);
+    }
+  });
 
-          $("#peers").html(peerList);
+  removeList.forEach(function(peer_key) {
+    console.log("Pruning expired peer " + peer_key);
+    delete peers[peer_key];
+  });
 
-        };
+  $("#peers").html(peerList);
 
-        addPeer = function(sess_id)
-        {
-            peers[sess_id] = {};
-           peer = peers[sess_id];
-           peer.sess_id = sess_id;
-           peer.name = sess_id.substring(0,5);
+};
 
-          return peer;
+addPeer = function(sess_id)
+{
+  peers[sess_id] = {};
+  peer = peers[sess_id];
+  peer.sess_id = sess_id;
+  peer.name = sess_id.substring(0,5);
 
-        };
+  return peer;
 
-         connection.onopen = function (session, details) {
-            console.log("Connected");
-            
-           /* set up callbacks for events */
+};
 
-           /* on_connect callback */
-           function on_heartbeat (args) {
-               console.log("on_heartbeat() event received from sess_id " + args[0]);
-             
-             peer = peers[args[0]];
-             
-             if(!peer)
-             {
-               peer = addPeer(args[0]);
-             }             
-               
-             peer.lastheartbeat = Date.now()
-           }
+connection.onopen = function (session, details) {
+  console.log("Connected");
 
-            /* on_call callback */
-           function on_call(args) {
-                var arg = args[0];
-             console.log("on_call() event received with arg "+ arg);
+  /* set up callbacks for events */
 
-           }
+  /* on_connect callback */
+  function on_heartbeat (args) {
+    console.log("on_heartbeat() event received from sess_id " + args[0]);
 
-           /* on_rename callback */
-           function on_rename(args) {
-            peer = peers[args[0]];
-             if(!peer)
-             {
-               console.log("Peer not found");
-               return;
-             }
+    peer = peers[args[0]];
 
-            console.log("on_rename() event received for sess_id "+ args[0] + ", old name=" + peer.name + "new name =" + args[1]);
-             peers[args[0]].name = args[1];
-           }
+    if(!peer)
+    {
+      peer = addPeer(args[0]);
+    }             
 
-           /* subscribe to topics */
-            session.subscribe('com.kraln.webrtc.heartbeat', on_heartbeat).then(
-               function (sub) {
-                  console.log('subscribed to heartbeat topic');
-               },
-               function (err) {
-                  console.log('failed to subscribe to heartbeat topic', err);
-               }
-            );
+    peer.lastheartbeat = Date.now()
+  }
 
-           session.subscribe('com.kraln.webrtc.rename', on_rename).then(
-             
-             function (sub) {
-                  console.log('subscribed to rename topic');
-               },
-               function (err) {
-                  console.log('failed to subscribe to rename topic', err);
-               }
+  /* when a peer wants to reach out */
+  function on_call(args) {
+    console.log("on_call() event received from " + args[0] + " + with arg "+ args[1]);
+  }
 
-           );
+  /* where a peer has an ice candidate */
+  function on_ice(args)
+  {
+    console.log("on_ice() event received from " + args[0] + " + with arg "+ args[1]);
+    webrtc_peerConnection.addIceCandidate(new RTCIceCandidate(args[1])).catch(webrtc_error);
+  }
 
-            session.subscribe('com.kraln.webrtc.call', on_call).then(
-               function (sub) {
-                  console.log('subscribed to call topic');
-               },
-               function (err) {
-                  console.log('failed to subscribe to call topic', err);
-               }
-            );
+  /* on_rename callback */
+  function on_rename(args) {
+    peer = peers[args[0]];
+    if(!peer)
+    {
+      console.log("Peer not found");
+      return;
+    }
 
-            // PUBLISH a heartbeat event periodically
-            //
-            t1 = setInterval(function () {
-               session.publish('com.kraln.webrtc.heartbeat', [sess_id]); 
-               updatePeerList();
-              console.log("published heartbeat");
-            }, HEARTBEAT_INTERVAL);
-     
- 
-         $("#btnRename").click(function() {
-          session.publish('com.kraln.webrtc.rename', [sess_id, $("#nickname").val()]);
-          console.log("Sent rename message");
-          });
+    console.log("on_rename() event received for sess_id "+ args[0] + ", old name=" + peer.name + "new name =" + args[1]);
+    peers[args[0]].name = args[1];
+  }
 
+  /* subscribe to topics */
+  session.subscribe('com.kraln.webrtc.heartbeat', on_heartbeat).then(
+    function (sub) {
+      console.log('subscribed to heartbeat topic');
+    },
+    function (err) {
+      console.log('failed to subscribe to heartbeat topic', err);
+    }
+  );
 
-         
-         };
-         
-          // fired when connection was lost (or could not be established)
-         //
-         connection.onclose = function (reason, details) {
-            console.log("Connection lost: " + reason);
-            if (t1) {
-               clearInterval(t1);
-               t1 = null;
-            }
-         }
-         
-        $("#nickname").val(sess_id.substring(0,5));
-      
-        // connect
-        connection.open();
+  session.subscribe('com.kraln.webrtc.rename', on_rename).then(
 
-             </script>
+    function (sub) {
+      console.log('subscribed to rename topic');
+    },
+    function (err) {
+      console.log('failed to subscribe to rename topic', err);
+    }
 
+  );
+
+  session.subscribe('com.kraln.webrtc.ice', on_ice).then(
+ function (sub) {
+      console.log('subscribed to ice topic');
+    },
+    function (err) {
+      console.log('failed to subscribe to ice topic', err);
+    }
   
+    );
+  session.subscribe('com.kraln.webrtc.call', on_call).then(
+    function (sub) {
+      console.log('subscribed to call topic');
+    },
+    function (err) {
+      console.log('failed to subscribe to call topic', err);
+    }
+  );
+
+  // PUBLISH a heartbeat event periodically
+  //
+  t1 = setInterval(function () {
+    session.publish('com.kraln.webrtc.heartbeat', [sess_id]); 
+    updatePeerList();
+    console.log("published heartbeat");
+  }, HEARTBEAT_INTERVAL);
+
+
+  $("#btnRename").click(function() {
+    session.publish('com.kraln.webrtc.rename', [sess_id, $("#nickname").val()]);
+    console.log("Sent rename message");
+  });
+
+  pub = function(addr, args)
+  {
+    session.publish(addr, args);
+  };
+  
+
+};
+
+// fired when connection was lost (or could not be established)
+//
+connection.onclose = function (reason, details) {
+  console.log("Connection lost: " + reason);
+  if (t1) {
+    clearInterval(t1);
+    t1 = null;
+  }
+}
+
+$("#nickname").val(sess_id.substring(0,5));
+
+//  "entrypoint"
+connection.open();
+webrtc_getlocalaudio();
+
+    </script>
+
+
   </body>
 </html>
