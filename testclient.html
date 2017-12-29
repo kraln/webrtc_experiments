@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html>
+  <head>
+        <script>AUTOBAHN_DEBUG = true;</script>
+      <script src="jquery-3.2.1.min.js"></script>
+      <script src="autobahn.min.js"></script>
+      <script>
+
+        function uuidv4() {
+          return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+            (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
+          )
+        }
+      </script>
+ 
+  </head>
+
+  <body>
+      <h1>Kraln WebRTC + WAMP Testing</h1>
+        <input placeholder="Nickname" id="nickname"/><button id="btnRename">Rename</button>
+      <div id="peers">
+        
+      </div>
+      <button>Start Call with peers</button>
+  
+  
+     <script>
+        
+        /* WAMP url. Currently running locally in docker */
+        var wsuri = "ws://127.0.0.1:8080/ws";
+        var connection = new autobahn.Connection({
+           url: wsuri,
+           realm: "realm1"
+        });
+
+        var t1; // heartbeat timer
+        var sess_id = uuidv4(); // session id
+        var peers = {};
+
+        /*
+        Peer {
+          sess_id = uuid of peer session
+          name = name of peer session
+          leatheartbeat = last time the heartbeat was seen
+        }
+
+        */
+        updatePeerList=function()
+        {
+          var peerList = "Peers: ";
+          var removeList = [];
+          Object.keys(peers).forEach(function(peer_key) {
+            peer = peers[peer_key];
+            peerList = peerList + "<br />"+ peer.name + " [" + peer.sess_id + "] " + (Date.now() - peer.lastheartbeat);
+            
+            /* remove if over 15 seconds old */
+            if ((Date.now() - peer.lastheartbeat) > 15000)
+            {
+              removeList[] = peer_key;
+            }
+          });
+
+          removeList.forEach(function(peer_key) {
+            console.log("Pruning expired peer " + peer_key);
+            delete peers[peer_key];
+          });
+
+          $("#peers").html(peerList);
+
+        }
+
+         connection.onopen = function (session, details) {
+            console.log("Connected");
+            
+           /* set up callbacks for events */
+
+           /* on_connect callback */
+           function on_heartbeat (args) {
+               console.log("on_heartbeat() event received from sess_id " + args[0]);
+             
+             peer = peers[args[0]];
+             
+             if(!peer)
+             { // client signon
+              peers[args[0]] = {};
+              peer = peers[args[0]];
+              peer.sess_id = args[0];
+            }             
+               
+             peer.lastheartbeat = Date.now()
+           }
+
+            /* on_call callback */
+           function on_call(args) {
+                var arg = args[0];
+             console.log("on_call() event received with arg "+ arg);
+
+           }
+
+           /* on_rename callback */
+           function on_rename(args) {
+            console.log("on_rename() event received for sess_id "+ args[0] + ", old name=" + names[args[0]] + "new name =" + args[1]);
+            peer = peers[args[0]];
+             if(!peer)
+             {
+               console.log("Peer not found");
+               return;
+             }
+
+             peers[args[0]].name = args[1];
+           }
+
+           /* subscribe to topics */
+            session.subscribe('com.kraln.webrtc.heartbeat', on_heartbeat).then(
+               function (sub) {
+                  console.log('subscribed to heartbeat topic');
+               },
+               function (err) {
+                  console.log('failed to subscribe to heartbeat topic', err);
+               }
+            );
+
+            session.subscribe('com.kraln.webrtc.call', on_call).then(
+               function (sub) {
+                  console.log('subscribed to call topic');
+               },
+               function (err) {
+                  console.log('failed to subscribe to call topic', err);
+               }
+            );
+
+            // PUBLISH a heartbeat event periodically
+            //
+            t1 = setInterval(function () {
+               session.publish('com.kraln.webrtc.heartbeat', [sess_id]); 
+               updatePeerList();
+              console.log("published heartbeat");
+            }, 500);
+         };
+         
+          // fired when connection was lost (or could not be established)
+         //
+         connection.onclose = function (reason, details) {
+            console.log("Connection lost: " + reason);
+            if (t1) {
+               clearInterval(t1);
+               t1 = null;
+            }
+         }
+         
+        $("#nickname").val(sess_id.substring(0,5));
+        // connect
+        connection.open();
+      </script>
+
+  
+  </body>
+</html>
